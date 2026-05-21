@@ -314,7 +314,7 @@ export function AgentSquadPanelPhase3() {
     return acc
   }, {} as Record<string, number>)
 
-  if (loading && agents.length === 0) {
+  if (loading && agents.length === 0 && bridgeAgents.length === 0) {
     return <Loader variant="panel" label="Loading agents" />
   }
 
@@ -422,7 +422,7 @@ export function AgentSquadPanelPhase3() {
 
       {/* Agent Grid */}
       <div className="flex-1 p-4 overflow-y-auto">
-        {agents.length === 0 ? (
+        {agents.length === 0 && bridgeAgents.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
             <div className="w-12 h-12 rounded-full bg-surface-2 flex items-center justify-center mb-3">
               <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
