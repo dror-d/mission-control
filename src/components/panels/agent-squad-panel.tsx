@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
@@ -53,6 +53,7 @@ export function AgentSquadPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
+  const [selectedBridgeAgent, setSelectedBridgeAgent] = useState<Agent | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
 
@@ -243,7 +244,10 @@ export function AgentSquadPanel() {
               <div
                 key={agent.id}
                 className="bg-gray-800 rounded-lg p-4 border-l-4 border-gray-600 hover:bg-gray-750 transition-colors cursor-pointer"
-                onClick={() => agent.runtime_type !== 'mycelium' && setSelectedAgent(agent)}
+                onClick={() => {
+                  if (agent.runtime_type === 'mycelium') setSelectedBridgeAgent(agent)
+                  else setSelectedAgent(agent)
+                }}
               >
                 {/* Agent Header */}
                 <div className="flex items-start justify-between mb-3">
@@ -359,6 +363,14 @@ export function AgentSquadPanel() {
           onClose={() => setSelectedAgent(null)}
           onUpdate={fetchAgents}
           onStatusUpdate={updateAgentStatus}
+        />
+      )}
+
+      {/* Mycelium Bridge Agent Message Modal */}
+      {selectedBridgeAgent && (
+        <BridgeAgentModal
+          agent={selectedBridgeAgent}
+          onClose={() => setSelectedBridgeAgent(null)}
         />
       )}
 
@@ -561,6 +573,174 @@ function AgentDetailModal({
     </div>
   )
 }
+
+// ── BridgeAgentModal ──────────────────────────────────────────────────────────
+
+interface ChatEntry {
+  role: 'user' | 'assistant' | 'status'
+  text: string
+}
+
+function BridgeAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [history, setHistory] = useState<ChatEntry[]>([])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [history, sending])
+
+  const handleSend = async () => {
+    const msg = input.trim()
+    if (!msg || sending) return
+    setInput('')
+    setSendError(null)
+    setHistory((h) => [...h, { role: 'user', text: msg }])
+    setSending(true)
+
+    try {
+      const response = await fetch('/api/bridge/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agent.bridge_id,
+          session_id: sessionId || undefined,
+          message: msg,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to send')
+
+      setSessionId(data.session_id)
+      if (data.status === 'failed') {
+        setHistory((h) => [
+          ...h,
+          { role: 'status', text: `Error: ${data.error || 'Provider error'}` },
+        ])
+      } else {
+        setHistory((h) => [
+          ...h,
+          { role: 'assistant', text: data.response_text || '(empty response)' },
+        ])
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error sending message'
+      setSendError(msg)
+      setHistory((h) => h.slice(0, -1)) // remove the user message on error
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 rounded-lg w-full max-w-2xl flex flex-col" style={{ height: '70vh' }}>
+        {/* Header */}
+        <div className="flex items-start justify-between p-4 border-b border-gray-700 shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold text-white">{agent.name}</h3>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-1 text-muted-foreground border border-border/30">
+                mycelium
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {agent.provider} / {agent.model}
+            </p>
+          </div>
+          <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-2xl">
+            ×
+          </Button>
+        </div>
+
+        {/* Chat history */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {history.length === 0 && (
+            <p className="text-gray-500 text-sm text-center pt-8">
+              Send a message to start a conversation with this agent.
+            </p>
+          )}
+          {history.map((entry, i) => (
+            <div
+              key={i}
+              className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div
+                className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                  entry.role === 'user'
+                    ? 'bg-blue-600 text-white'
+                    : entry.role === 'status'
+                      ? 'bg-red-900/40 text-red-300 border border-red-700/40'
+                      : 'bg-gray-700 text-gray-100'
+                }`}
+              >
+                {entry.text}
+              </div>
+            </div>
+          ))}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 animate-pulse">
+                Thinking...
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Error banner */}
+        {sendError && (
+          <div className="mx-4 mb-2 bg-red-900/30 border border-red-500 text-red-300 text-xs rounded px-3 py-2 shrink-0">
+            {sendError}
+            <Button
+              onClick={() => setSendError(null)}
+              variant="ghost"
+              size="icon-sm"
+              className="float-right text-red-300 hover:text-red-100"
+            >
+              ×
+            </Button>
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="p-4 border-t border-gray-700 shrink-0">
+          <div className="flex gap-2 items-end">
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={sending}
+              rows={2}
+              placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+              className="flex-1 bg-gray-700 text-white rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+            />
+            <Button onClick={handleSend} disabled={sending || !input.trim()} className="shrink-0">
+              {sending ? '...' : 'Send'}
+            </Button>
+          </div>
+          {sessionId && (
+            <p className="text-xs text-gray-600 mt-1 font-mono truncate" title={sessionId}>
+              session: {sessionId}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── CreateAgentModal ──────────────────────────────────────────────────────────
 
 const MYCELIUM_DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free'
 

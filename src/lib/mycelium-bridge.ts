@@ -4,7 +4,7 @@
  * All functions use the existing callOpenClawGateway WebSocket transport.
  * The bridge must be reachable at the configured gateway URL.
  */
-import { callOpenClawGateway } from './openclaw-gateway'
+import { callOpenClawGateway, callOpenClawGatewayCollectEvents, GatewayStreamResult } from './openclaw-gateway'
 
 export interface MyceliumAgentParams {
   id: string
@@ -46,4 +46,21 @@ export async function bridgeAgentsList(): Promise<MyceliumAgent[]> {
 
 export async function bridgeAgentsDelete(id: string): Promise<void> {
   await callOpenClawGateway('agents_delete', { id })
+}
+
+/** Re-export for consumers that want the full type. */
+export type SessionSendResult = GatewayStreamResult
+
+/**
+ * Send a message to a Mycelium Bridge agent and await the full response.
+ * Keeps the WebSocket open to collect streaming session.message events,
+ * resolving once task.updated carries status completed or failed.
+ * Timeout: 30 s (LLM calls can be slow on free models).
+ */
+export async function bridgeSessionsSend(params: {
+  agent_id: string
+  session_id?: string
+  message: string
+}): Promise<SessionSendResult> {
+  return callOpenClawGatewayCollectEvents('sessions_send', params, 30000)
 }
