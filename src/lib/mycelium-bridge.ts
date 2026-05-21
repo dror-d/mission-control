@@ -62,5 +62,5 @@ export async function bridgeSessionsSend(params: {
   session_id?: string
   message: string
 }): Promise<SessionSendResult> {
-  return callOpenClawGatewayCollectEvents('sessions_send', params, 30000)
+  return callOpenClawGatewayCollectEvents('sessions_send', params, 60000)
 }
