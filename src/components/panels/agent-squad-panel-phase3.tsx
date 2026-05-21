@@ -101,6 +101,9 @@ export function AgentSquadPanelPhase3() {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showQuickSpawnModal, setShowQuickSpawnModal] = useState(false)
+  const [bridgeAgents, setBridgeAgents] = useState<BridgeAgentView[]>([])
+  const [selectedBridgeAgent, setSelectedBridgeAgent] = useState<BridgeAgentView | null>(null)
+  const [showCreateBridgeModal, setShowCreateBridgeModal] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [syncToast, setSyncToast] = useState<string | null>(null)
@@ -159,6 +162,17 @@ export function AgentSquadPanelPhase3() {
 
       const data = await response.json()
       setAgents(data.agents || [])
+
+      // Fetch Mycelium bridge agents in parallel — failure is non-fatal
+      try {
+        const bridgeRes = await fetch('/api/bridge/agents')
+        if (bridgeRes.ok) {
+          const bData = await bridgeRes.json()
+          setBridgeAgents(bData.agents || [])
+        }
+      } catch {
+        // Bridge unavailable — keep showing existing bridge agents
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -368,6 +382,13 @@ export function AgentSquadPanelPhase3() {
             {t('addAgent')}
           </Button>
           <Button
+            onClick={() => setShowCreateBridgeModal(true)}
+            size="sm"
+            className="bg-violet-500/20 text-violet-300 border border-violet-500/30 hover:bg-violet-500/30"
+          >
+            + Mycelium
+          </Button>
+          <Button
             onClick={fetchAgents}
             variant="secondary"
             size="sm"
@@ -416,6 +437,37 @@ export function AgentSquadPanelPhase3() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* Mycelium Bridge agent cards */}
+            {bridgeAgents.map(ba => (
+              <div
+                key={`bridge:${ba.id}`}
+                className="group relative overflow-hidden rounded-xl border border-violet-500/30 bg-card p-4 transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-violet-400/50 hover:shadow-lg cursor-pointer"
+                onClick={() => setSelectedBridgeAgent(ba)}
+              >
+                <div className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-violet-300/80 to-violet-600/30" />
+                {/* Header */}
+                <div className="flex items-start justify-between mb-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="font-semibold text-foreground truncate">{ba.name}</h3>
+                      <span className="text-2xs px-1.5 py-0.5 rounded-full border bg-violet-500/15 text-violet-300 border-violet-500/30 shrink-0">
+                        mycelium
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate font-mono">{ba.provider} / {ba.model}</p>
+                  </div>
+                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs capitalize shrink-0 ${statusBadgeStyles[ba.status] || statusBadgeStyles.offline}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${(statusCardStyles[ba.status] || defaultCardStyle).dot}`} />
+                    {ba.status}
+                  </span>
+                </div>
+                {/* Footer */}
+                <div className="flex items-center justify-between mt-2 pt-2 border-t border-violet-500/20">
+                  <span className="text-[11px] text-violet-400/70">Click to message</span>
+                </div>
+              </div>
+            ))}
+
             {agents.map(agent => {
               const modelName = formatModelName(agent.config)
               const taskStatsLine = buildTaskStatParts(agent.taskStats)
@@ -560,6 +612,29 @@ export function AgentSquadPanelPhase3() {
         <CreateAgentModal
           onClose={() => setShowCreateModal(false)}
           onCreated={fetchAgents}
+        />
+      )}
+
+      {/* Mycelium Bridge Agent Message Modal */}
+      {selectedBridgeAgent && (
+        <BridgeAgentModal
+          agent={selectedBridgeAgent}
+          onClose={() => setSelectedBridgeAgent(null)}
+        />
+      )}
+
+      {/* Create Bridge Agent Modal */}
+      {showCreateBridgeModal && (
+        <CreateBridgeAgentModal
+          onClose={() => setShowCreateBridgeModal(false)}
+          onCreated={() => {
+            setShowCreateBridgeModal(false)
+            // Re-fetch bridge agents
+            fetch('/api/bridge/agents')
+              .then(r => r.ok ? r.json() : { agents: [] })
+              .then(d => setBridgeAgents(d.agents || []))
+              .catch(() => {})
+          }}
         />
       )}
 
@@ -1220,3 +1295,324 @@ function QuickSpawnModal({
 }
 
 export default AgentSquadPanelPhase3
+
+// ── Mycelium Bridge integration ───────────────────────────────────────────────
+
+interface BridgeAgentView {
+  id: string
+  name: string
+  provider: string
+  model: string
+  system_prompt?: string
+  status: string
+  profile_status: string
+}
+
+const BRIDGE_DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free'
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+// ── CreateBridgeAgentModal ────────────────────────────────────────────────────
+
+function CreateBridgeAgentModal({
+  onClose,
+  onCreated,
+}: {
+  onClose: () => void
+  onCreated: () => void
+}) {
+  const [form, setForm] = useState({
+    name: '',
+    bridge_id: '',
+    provider: 'openrouter',
+    model: BRIDGE_DEFAULT_MODEL,
+    system_prompt: '',
+  })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const handleNameChange = (name: string) => {
+    setForm(prev => ({
+      ...prev,
+      name,
+      bridge_id:
+        prev.bridge_id === slugify(prev.name) || prev.bridge_id === ''
+          ? slugify(name)
+          : prev.bridge_id,
+    }))
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try {
+      const id = form.bridge_id || slugify(form.name)
+      const res = await fetch('/api/bridge/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id,
+          name: form.name,
+          provider: form.provider,
+          model: form.model,
+          system_prompt: form.system_prompt || undefined,
+          channels: ['dashboard'],
+          status: 'online',
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        throw new Error(d.error || 'Failed to create agent')
+      }
+      onCreated()
+    } catch (e: any) {
+      setErr(e.message || 'Error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-card border border-violet-500/30 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-lg font-bold text-foreground">New Mycelium Agent</h3>
+            <Button onClick={onClose} type="button" variant="ghost" size="icon-sm" className="text-xl">×</Button>
+          </div>
+
+          {err && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded px-3 py-2">
+              {err}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Name</label>
+            <input
+              value={form.name}
+              onChange={e => handleNameChange(e.target.value)}
+              required
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/50"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Agent ID</label>
+            <input
+              value={form.bridge_id}
+              onChange={e => setForm(p => ({ ...p, bridge_id: e.target.value }))}
+              placeholder="auto-generated from name"
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground font-mono text-sm focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/50"
+            />
+            <p className="text-xs text-muted-foreground/60 mt-1">Unique slug (lowercase, hyphens)</p>
+          </div>
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Provider</label>
+            <select
+              value={form.provider}
+              onChange={e => setForm(p => ({ ...p, provider: e.target.value }))}
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
+            >
+              <option value="openrouter">OpenRouter</option>
+              <option value="claude">Claude (Anthropic)</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Model</label>
+            <input
+              value={form.model}
+              onChange={e => setForm(p => ({ ...p, model: e.target.value }))}
+              required
+              placeholder={BRIDGE_DEFAULT_MODEL}
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground font-mono text-sm focus:border-violet-500/50"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">System Prompt (optional)</label>
+            <textarea
+              value={form.system_prompt}
+              onChange={e => setForm(p => ({ ...p, system_prompt: e.target.value }))}
+              rows={3}
+              placeholder="You are a helpful assistant."
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
+            />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button type="submit" disabled={busy} className="flex-1 bg-violet-600 hover:bg-violet-700 text-white">
+              {busy ? 'Creating...' : 'Create Agent'}
+            </Button>
+            <Button type="button" onClick={onClose} variant="secondary">Cancel</Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ── BridgeAgentModal (chat) ───────────────────────────────────────────────────
+
+interface ChatEntry {
+  role: 'user' | 'assistant' | 'status'
+  text: string
+}
+
+function BridgeAgentModal({
+  agent,
+  onClose,
+}: {
+  agent: BridgeAgentView
+  onClose: () => void
+}) {
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [history, setHistory] = useState<ChatEntry[]>([])
+  const [input, setInput] = useState('')
+  const [sending, setSending] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [history, sending])
+
+  const handleSend = async () => {
+    const msg = input.trim()
+    if (!msg || sending) return
+    setInput('')
+    setSendError(null)
+    setHistory(h => [...h, { role: 'user', text: msg }])
+    setSending(true)
+
+    try {
+      const res = await fetch('/api/bridge/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agent.id,
+          session_id: sessionId || undefined,
+          message: msg,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to send')
+      setSessionId(data.session_id)
+      setHistory(h => [
+        ...h,
+        data.status === 'failed'
+          ? { role: 'status' as const, text: `Error: ${data.error || 'Provider error'}` }
+          : { role: 'assistant' as const, text: data.response_text || '(empty response)' },
+      ])
+    } catch (e: any) {
+      setSendError(e.message || 'Error sending message')
+      setHistory(h => h.slice(0, -1))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div
+        className="bg-card border border-violet-500/30 rounded-xl w-full max-w-2xl flex flex-col"
+        style={{ height: '70vh' }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between p-4 border-b border-violet-500/20 shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold text-foreground">{agent.name}</h3>
+              <span className="text-2xs px-1.5 py-0.5 rounded-full border bg-violet-500/15 text-violet-300 border-violet-500/30">
+                mycelium
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground font-mono mt-0.5">
+              {agent.provider} / {agent.model}
+            </p>
+          </div>
+          <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-xl">×</Button>
+        </div>
+
+        {/* Chat history */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {history.length === 0 && (
+            <p className="text-muted-foreground/50 text-sm text-center pt-8">
+              Send a message to start a conversation with this agent.
+            </p>
+          )}
+          {history.map((entry, i) => (
+            <div key={i} className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[80%] rounded-xl px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                  entry.role === 'user'
+                    ? 'bg-violet-600/80 text-white'
+                    : entry.role === 'status'
+                      ? 'bg-red-500/10 border border-red-500/20 text-red-400'
+                      : 'bg-surface-2 text-foreground border border-border/50'
+                }`}
+              >
+                {entry.text}
+              </div>
+            </div>
+          ))}
+          {sending && (
+            <div className="flex justify-start">
+              <div className="bg-surface-2 border border-border/50 rounded-xl px-3 py-2 text-sm text-muted-foreground animate-pulse">
+                Thinking...
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Error banner */}
+        {sendError && (
+          <div className="mx-4 mb-2 bg-red-500/10 border border-red-500/20 text-red-400 text-xs rounded px-3 py-2 shrink-0 flex items-center justify-between">
+            <span>{sendError}</span>
+            <Button onClick={() => setSendError(null)} variant="ghost" size="icon-sm" className="text-red-400/60">×</Button>
+          </div>
+        )}
+
+        {/* Input */}
+        <div className="p-4 border-t border-violet-500/20 shrink-0">
+          <div className="flex gap-2 items-end">
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              disabled={sending}
+              rows={2}
+              placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+              className="flex-1 px-3 py-2 bg-surface-1 border border-border rounded text-sm text-foreground resize-none focus:outline-none focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/50 disabled:opacity-50"
+            />
+            <Button
+              onClick={handleSend}
+              disabled={sending || !input.trim()}
+              className="shrink-0 bg-violet-600 hover:bg-violet-700 text-white"
+            >
+              {sending ? '...' : 'Send'}
+            </Button>
+          </div>
+          {sessionId && (
+            <p className="text-[10px] text-muted-foreground/40 mt-1 font-mono truncate" title={sessionId}>
+              session: {sessionId}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
