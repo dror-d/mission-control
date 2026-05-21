@@ -9,7 +9,7 @@ import { createClientLogger } from '@/lib/client-logger'
 const log = createClientLogger('AgentSquadPanel')
 
 interface Agent {
-  id: number
+  id: number | string
   name: string
   role: string
   session_key?: string
@@ -27,6 +27,10 @@ interface Agent {
     completed: number
   }
   runtime_type?: string
+  // Mycelium bridge agent fields
+  provider?: string
+  model?: string
+  bridge_id?: string
 }
 
 const statusColors: Record<string, string> = {
@@ -52,17 +56,43 @@ export function AgentSquadPanel() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
 
-  // Fetch agents
+  // Fetch agents (MC SQLite + Mycelium bridge, merged)
   const fetchAgents = useCallback(async () => {
     try {
       setError(null)
       if (agents.length === 0) setLoading(true)
 
-      const response = await fetch('/api/agents')
-      if (!response.ok) throw new Error(t('failedToFetch'))
+      const [mcRes, bridgeRes] = await Promise.allSettled([
+        fetch('/api/agents'),
+        fetch('/api/bridge/agents'),
+      ])
 
-      const data = await response.json()
-      setAgents(data.agents || [])
+      if (mcRes.status === 'rejected' || !mcRes.value.ok) {
+        throw new Error(t('failedToFetch'))
+      }
+
+      const mcData = await mcRes.value.json()
+      const mcAgents: Agent[] = mcData.agents || []
+
+      // Bridge agents are optional — failure is non-fatal
+      let bridgeAgents: Agent[] = []
+      if (bridgeRes.status === 'fulfilled' && bridgeRes.value.ok) {
+        const bridgeData = await bridgeRes.value.json()
+        bridgeAgents = (bridgeData.agents || []).map((a: any) => ({
+          id: `bridge:${a.id}`,
+          bridge_id: a.id,
+          name: a.name,
+          role: a.model || '',
+          status: (a.status as Agent['status']) || 'offline',
+          runtime_type: 'mycelium',
+          provider: a.provider,
+          model: a.model,
+          created_at: a.created_at ? Math.floor(new Date(a.created_at).getTime() / 1000) : 0,
+          updated_at: a.updated_at ? Math.floor(new Date(a.updated_at).getTime() / 1000) : 0,
+        }))
+      }
+
+      setAgents([...mcAgents, ...bridgeAgents])
     } catch (err) {
       setError(err instanceof Error ? err.message : t('errorOccurred'))
     } finally {
@@ -83,7 +113,7 @@ export function AgentSquadPanel() {
     return () => clearInterval(interval)
   }, [autoRefresh, fetchAgents])
 
-  // Update agent status
+  // Update agent status (MC agents only — bridge agents manage their own status)
   const updateAgentStatus = async (agentName: string, status: Agent['status'], activity?: string) => {
     try {
       const response = await fetch('/api/agents', {
@@ -213,7 +243,7 @@ export function AgentSquadPanel() {
               <div
                 key={agent.id}
                 className="bg-gray-800 rounded-lg p-4 border-l-4 border-gray-600 hover:bg-gray-750 transition-colors cursor-pointer"
-                onClick={() => setSelectedAgent(agent)}
+                onClick={() => agent.runtime_type !== 'mycelium' && setSelectedAgent(agent)}
               >
                 {/* Agent Header */}
                 <div className="flex items-start justify-between mb-3">
@@ -234,6 +264,14 @@ export function AgentSquadPanel() {
                     <span className="text-xs text-gray-400">{agent.status}</span>
                   </div>
                 </div>
+
+                {/* Bridge agent: provider/model info */}
+                {agent.runtime_type === 'mycelium' && agent.provider && (
+                  <div className="text-xs text-gray-400 mb-2">
+                    <span className="font-medium">{agent.provider}</span>
+                    {agent.model && <span className="ml-1 text-gray-500 truncate" title={agent.model}> / {agent.model}</span>}
+                  </div>
+                )}
 
                 {/* Session Info */}
                 {agent.session_key && (
@@ -268,44 +306,46 @@ export function AgentSquadPanel() {
                   )}
                 </div>
 
-                {/* Quick Actions */}
-                <div className="flex gap-1">
-                  <Button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      updateAgentStatus(agent.name, 'idle', 'Manually activated')
-                    }}
-                    disabled={agent.status === 'idle'}
-                    variant="success"
-                    size="xs"
-                    className="flex-1"
-                  >
-                    {t('wake')}
-                  </Button>
-                  <Button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      updateAgentStatus(agent.name, 'busy', 'Manually set to busy')
-                    }}
-                    disabled={agent.status === 'busy'}
-                    size="xs"
-                    className="flex-1 bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30"
-                  >
-                    {t('busy')}
-                  </Button>
-                  <Button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      updateAgentStatus(agent.name, 'offline', 'Manually set offline')
-                    }}
-                    disabled={agent.status === 'offline'}
-                    variant="secondary"
-                    size="xs"
-                    className="flex-1"
-                  >
-                    {t('sleep')}
-                  </Button>
-                </div>
+                {/* Quick Actions — MC agents only */}
+                {agent.runtime_type !== 'mycelium' && (
+                  <div className="flex gap-1">
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        updateAgentStatus(agent.name, 'idle', 'Manually activated')
+                      }}
+                      disabled={agent.status === 'idle'}
+                      variant="success"
+                      size="xs"
+                      className="flex-1"
+                    >
+                      {t('wake')}
+                    </Button>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        updateAgentStatus(agent.name, 'busy', 'Manually set to busy')
+                      }}
+                      disabled={agent.status === 'busy'}
+                      size="xs"
+                      className="flex-1 bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 hover:bg-yellow-500/30"
+                    >
+                      {t('busy')}
+                    </Button>
+                    <Button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        updateAgentStatus(agent.name, 'offline', 'Manually set offline')
+                      }}
+                      disabled={agent.status === 'offline'}
+                      variant="secondary"
+                      size="xs"
+                      className="flex-1"
+                    >
+                      {t('sleep')}
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -522,6 +562,12 @@ function AgentDetailModal({
   )
 }
 
+const MYCELIUM_DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free'
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
 // Create Agent Modal
 function CreateAgentModal({
   onClose,
@@ -537,35 +583,83 @@ function CreateAgentModal({
     session_key: '',
     soul_content: '',
     runtime_type: '' as string,
+    // Mycelium-specific
+    bridge_id: '',
+    provider: 'openrouter',
+    model: MYCELIUM_DEFAULT_MODEL,
+    system_prompt: '',
   })
+  const [createError, setCreateError] = useState<string | null>(null)
+
+  const isMyceli = formData.runtime_type === 'mycelium'
+
+  // Auto-fill bridge_id from name when not manually set
+  const handleNameChange = (name: string) => {
+    setFormData(prev => ({
+      ...prev,
+      name,
+      bridge_id: prev.bridge_id === slugify(prev.name) || prev.bridge_id === '' ? slugify(name) : prev.bridge_id,
+    }))
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
-    try {
-      const response = await fetch('/api/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...formData,
-          runtime_type: formData.runtime_type || undefined,
-        })
-      })
+    setCreateError(null)
 
-      if (!response.ok) throw new Error(t('failedToCreate'))
-      
+    try {
+      if (isMyceli) {
+        const id = formData.bridge_id || slugify(formData.name)
+        const response = await fetch('/api/bridge/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id,
+            name: formData.name,
+            provider: formData.provider,
+            model: formData.model,
+            system_prompt: formData.system_prompt || undefined,
+            channels: ['dashboard'],
+            status: 'online',
+          }),
+        })
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(data.error || t('failedToCreate'))
+        }
+      } else {
+        const response = await fetch('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: formData.name,
+            role: formData.role,
+            session_key: formData.session_key || undefined,
+            soul_content: formData.soul_content || undefined,
+            runtime_type: formData.runtime_type || undefined,
+          }),
+        })
+        if (!response.ok) throw new Error(t('failedToCreate'))
+      }
+
       onCreated()
       onClose()
     } catch (error) {
       log.error('Error creating agent:', error)
+      setCreateError(error instanceof Error ? error.message : t('failedToCreate'))
     }
   }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg max-w-md w-full">
+      <div className="bg-gray-800 rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto">
         <form onSubmit={handleSubmit} className="p-6">
           <h3 className="text-xl font-bold text-white mb-4">{t('createNewAgent')}</h3>
+
+          {createError && (
+            <div className="bg-red-900/30 border border-red-500 text-red-300 text-sm rounded px-3 py-2 mb-4">
+              {createError}
+            </div>
+          )}
 
           <div className="space-y-4">
             <div>
@@ -573,20 +667,8 @@ function CreateAgentModal({
               <input
                 type="text"
                 value={formData.name}
-                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+                onChange={(e) => handleNameChange(e.target.value)}
                 className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">{t('role')}</label>
-              <input
-                type="text"
-                value={formData.role}
-                onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder={t('rolePlaceholder')}
                 required
               />
             </div>
@@ -599,6 +681,7 @@ function CreateAgentModal({
                 className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">{t('runtimeTypeAuto')}</option>
+                <option value="mycelium">Mycelium (Bridge)</option>
                 <option value="hermes">Hermes Agent</option>
                 <option value="openclaw">OpenClaw</option>
                 <option value="claude">Claude Code</option>
@@ -607,27 +690,97 @@ function CreateAgentModal({
               </select>
             </div>
 
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">{t('sessionKeyOptional')}</label>
-              <input
-                type="text"
-                value={formData.session_key}
-                onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder={t('sessionKeyPlaceholder')}
-              />
-            </div>
+            {/* Mycelium-specific fields */}
+            {isMyceli && (
+              <>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Agent ID</label>
+                  <input
+                    type="text"
+                    value={formData.bridge_id}
+                    onChange={(e) => setFormData(prev => ({ ...prev, bridge_id: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    placeholder="auto-generated from name"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Unique identifier (lowercase, hyphens)</p>
+                </div>
 
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">{t('soulContentOptional')}</label>
-              <textarea
-                value={formData.soul_content}
-                onChange={(e) => setFormData(prev => ({ ...prev, soul_content: e.target.value }))}
-                className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={3}
-                placeholder={t('soulPlaceholder')}
-              />
-            </div>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Provider</label>
+                  <select
+                    value={formData.provider}
+                    onChange={(e) => setFormData(prev => ({ ...prev, provider: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    required
+                  >
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="claude">Claude (Anthropic)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">Model</label>
+                  <input
+                    type="text"
+                    value={formData.model}
+                    onChange={(e) => setFormData(prev => ({ ...prev, model: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    placeholder={MYCELIUM_DEFAULT_MODEL}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">System Prompt (optional)</label>
+                  <textarea
+                    value={formData.system_prompt}
+                    onChange={(e) => setFormData(prev => ({ ...prev, system_prompt: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    rows={3}
+                    placeholder="You are a helpful assistant."
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Standard MC agent fields */}
+            {!isMyceli && (
+              <>
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">{t('role')}</label>
+                  <input
+                    type="text"
+                    value={formData.role}
+                    onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={t('rolePlaceholder')}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">{t('sessionKeyOptional')}</label>
+                  <input
+                    type="text"
+                    value={formData.session_key}
+                    onChange={(e) => setFormData(prev => ({ ...prev, session_key: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={t('sessionKeyPlaceholder')}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-gray-400 mb-1">{t('soulContentOptional')}</label>
+                  <textarea
+                    value={formData.soul_content}
+                    onChange={(e) => setFormData(prev => ({ ...prev, soul_content: e.target.value }))}
+                    className="w-full bg-gray-700 text-white rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    rows={3}
+                    placeholder={t('soulPlaceholder')}
+                  />
+                </div>
+              </>
+            )}
           </div>
 
           <div className="flex gap-3 mt-6">
