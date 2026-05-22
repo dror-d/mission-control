@@ -7,7 +7,7 @@ import { TerminalToolbar } from './terminal-toolbar'
 export interface SplitPane {
   id: string
   sessionId: string
-  sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'gateway'
+  sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'gateway' | 'mycelium'
   sessionName?: string
   isActive?: boolean
 }

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 
 interface TerminalViewProps {
   sessionId: string
-  sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'opencode' | 'gateway'
+  sessionKind: 'claude-code' | 'codex-cli' | 'hermes' | 'opencode' | 'gateway' | 'mycelium'
   mode: 'readonly' | 'interactive'
   onExit?: (code: number) => void
   onError?: (error: string) => void
