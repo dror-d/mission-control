@@ -250,10 +250,12 @@ export function ChatWorkspace({ mode = 'embedded', onClose }: ChatWorkspaceProps
     setSessionTranscriptLoading(true)
     setSessionTranscriptError(null)
 
-    // Gateway sessions use the gateway transcript API
+    // Gateway sessions use the gateway transcript API; mycelium sessions use the bridge transcript API
     const url = sessionMeta.sessionKind === 'gateway'
       ? `/api/sessions/transcript/gateway?key=${encodeURIComponent(sessionMeta.sessionKey || sessionMeta.sessionId)}&limit=50`
-      : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40`
+      : sessionMeta.sessionKind === 'mycelium'
+        ? `/api/sessions/transcript/bridge?session_id=${encodeURIComponent(sessionMeta.sessionId)}`
+        : `/api/sessions/transcript?kind=${encodeURIComponent(sessionMeta.sessionKind)}&id=${encodeURIComponent(sessionMeta.sessionId)}&limit=40`
 
     fetch(url)
       .then(async (res) => {
@@ -547,6 +549,7 @@ function SessionConversationView({
   onSavePreferences: (payload: { prefKey: string; displayName?: string; colorTag?: string }) => Promise<void>
 }) {
   const isGatewaySession = session.sessionKind === 'gateway'
+  const isMyceliumSession = session.sessionKind === 'mycelium'
   const isPtyCapableKind = session.sessionKind === 'claude-code' || session.sessionKind === 'codex-cli'
   const [viewMode, setViewMode] = useState<'terminal' | 'transcript'>('transcript')
   const prevSessionIdRef = useRef(session.sessionId)
@@ -590,7 +593,25 @@ function SessionConversationView({
     setContinueBusy(true)
     setContinueError(null)
     try {
-      if (isGatewaySession) {
+      if (isMyceliumSession) {
+        // Mycelium Bridge sessions: send directly to the bridge agent
+        const res = await fetch('/api/bridge/sessions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agent_id: session.agent || session.sessionId,
+            message: prompt,
+            session_id: session.sessionId,
+          }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          throw new Error(data?.error || 'Failed to send to bridge agent')
+        }
+        setContinuePrompt('')
+        // Refresh transcript after a short delay to let the LLM respond
+        setTimeout(() => onRefreshTranscript(), 1000)
+      } else if (isGatewaySession) {
         // Gateway sessions: forward message to the agent via chat messages API
         const agentName = session.agent || session.sessionId.split(':')[1] || 'unknown'
         const res = await fetch('/api/chat/messages', {
@@ -713,7 +734,7 @@ function SessionConversationView({
         </div>
 
         {/* Collapsible settings */}
-        {!isGatewaySession && (
+        {!isGatewaySession && !isMyceliumSession && (
           <details className="mt-2">
             <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground/80">
               Settings
@@ -784,7 +805,7 @@ function SessionConversationView({
           )}
           {!loading && !error && messages.length === 0 && (
             <div className="px-4 text-xs text-muted-foreground">
-              {isGatewaySession ? 'No messages loaded for this gateway session.' : 'No transcript snippets found for this session.'}
+              {isGatewaySession ? 'No messages loaded for this gateway session.' : isMyceliumSession ? 'No messages in this bridge session yet.' : 'No transcript snippets found for this session.'}
             </div>
           )}
           {!loading && !error && messages.length > 0 && (
@@ -807,7 +828,7 @@ function SessionConversationView({
       <div className="border-t border-border/50 px-4 py-2">
         {continueError && <div className="mb-1 text-xs text-red-400">{continueError}</div>}
         <div className="flex items-center gap-2">
-          <span className={`font-mono-tight text-xs ${isGatewaySession ? 'text-cyan-400/60' : 'text-green-400/60'}`}>{isGatewaySession ? '>' : '$'}</span>
+          <span className={`font-mono-tight text-xs ${isGatewaySession || isMyceliumSession ? 'text-cyan-400/60' : 'text-green-400/60'}`}>{isGatewaySession || isMyceliumSession ? '>' : '$'}</span>
           <input
             value={continuePrompt}
             onChange={(e) => setContinuePrompt(e.target.value)}
@@ -817,7 +838,7 @@ function SessionConversationView({
                 void handleContinueSession()
               }
             }}
-            placeholder={isGatewaySession ? 'Send message to this agent session...' : 'Send prompt to this local session...'}
+            placeholder={isGatewaySession || isMyceliumSession ? 'Send message to this agent session...' : 'Send prompt to this local session...'}
             className="h-7 flex-1 rounded border border-border/40 bg-surface-1 px-2 font-mono-tight text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/30"
           />
           <Button
@@ -897,10 +918,11 @@ function AgentAvatar({ name, size = 'md' }: { name: string; size?: 'sm' | 'md' }
 
 function getConversationStatus(agents: Array<{ name: string; status: string }>, conversationId: string): string {
   if (conversationId.startsWith('session:')) {
-    if (conversationId.includes('claude-code')) return 'Local Claude session'
-    if (conversationId.includes('codex-cli')) return 'Local Codex session'
-    if (conversationId.includes('hermes')) return 'Local Hermes session'
-    if (conversationId.includes('opencode')) return 'Local OpenCode session'
+    if (conversationId.includes(':claude-code:')) return 'Local Claude session'
+    if (conversationId.includes(':codex-cli:')) return 'Local Codex session'
+    if (conversationId.includes(':hermes:')) return 'Local Hermes session'
+    if (conversationId.includes(':opencode:')) return 'Local OpenCode session'
+    if (conversationId.includes(':mycelium:')) return 'Mycelium Bridge session'
     return 'Gateway session'
   }
   const name = conversationId.replace('agent_', '')

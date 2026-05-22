@@ -5,6 +5,11 @@ import { useTranslations } from 'next-intl'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { createClientLogger } from '@/lib/client-logger'
+import type {
+  BridgeContextPreviewResult,
+  BridgeSessionDetail,
+  BridgeAgentMessageResult,
+} from '@/lib/mycelium-bridge'
 
 const log = createClientLogger('AgentSquadPanel')
 
@@ -582,7 +587,76 @@ interface ChatEntry {
 }
 
 function BridgeAgentModal({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const [tab, setTab] = useState<'chat' | 'debug'>('chat')
   const [sessionId, setSessionId] = useState<string | null>(null)
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-gray-800 rounded-lg w-full max-w-2xl flex flex-col" style={{ height: '80vh' }}>
+        {/* Header */}
+        <div className="flex items-start justify-between p-4 border-b border-gray-700 shrink-0">
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-lg font-bold text-white">{agent.name}</h3>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-1 text-muted-foreground border border-border/30">
+                mycelium
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {agent.provider} / {agent.model}
+            </p>
+          </div>
+          <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-2xl">
+            ×
+          </Button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex border-b border-gray-700 shrink-0">
+          <button
+            onClick={() => setTab('chat')}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              tab === 'chat'
+                ? 'text-white border-b-2 border-blue-500'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            Chat
+          </button>
+          <button
+            onClick={() => setTab('debug')}
+            className={`px-4 py-2 text-sm font-medium transition-colors ${
+              tab === 'debug'
+                ? 'text-white border-b-2 border-blue-500'
+                : 'text-gray-400 hover:text-gray-200'
+            }`}
+          >
+            Debug / Context Preview
+          </button>
+        </div>
+
+        {/* Tab content */}
+        {tab === 'chat' ? (
+          <BridgeChatPane agent={agent} sessionId={sessionId} onSessionId={setSessionId} />
+        ) : (
+          <BridgeDebugPane agent={agent} sessionId={sessionId} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Chat pane ─────────────────────────────────────────────────────────────────
+
+function BridgeChatPane({
+  agent,
+  sessionId,
+  onSessionId,
+}: {
+  agent: Agent
+  sessionId: string | null
+  onSessionId: (id: string) => void
+}) {
   const [history, setHistory] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
@@ -614,7 +688,7 @@ function BridgeAgentModal({ agent, onClose }: { agent: Agent; onClose: () => voi
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Failed to send')
 
-      setSessionId(data.session_id)
+      onSessionId(data.session_id)
       if (data.status === 'failed') {
         setHistory((h) => [
           ...h,
@@ -627,9 +701,9 @@ function BridgeAgentModal({ agent, onClose }: { agent: Agent; onClose: () => voi
         ])
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Error sending message'
-      setSendError(msg)
-      setHistory((h) => h.slice(0, -1)) // remove the user message on error
+      const errMsg = err instanceof Error ? err.message : 'Error sending message'
+      setSendError(errMsg)
+      setHistory((h) => h.slice(0, -1))
     } finally {
       setSending(false)
     }
@@ -643,100 +717,413 @@ function BridgeAgentModal({ agent, onClose }: { agent: Agent; onClose: () => voi
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-gray-800 rounded-lg w-full max-w-2xl flex flex-col" style={{ height: '70vh' }}>
-        {/* Header */}
-        <div className="flex items-start justify-between p-4 border-b border-gray-700 shrink-0">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-lg font-bold text-white">{agent.name}</h3>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-1 text-muted-foreground border border-border/30">
-                mycelium
-              </span>
+    <>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {history.length === 0 && (
+          <p className="text-gray-500 text-sm text-center pt-8">
+            Send a message to start a conversation with this agent.
+          </p>
+        )}
+        {history.map((entry, i) => (
+          <div
+            key={i}
+            className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div
+              className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
+                entry.role === 'user'
+                  ? 'bg-blue-600 text-white'
+                  : entry.role === 'status'
+                    ? 'bg-red-900/40 text-red-300 border border-red-700/40'
+                    : 'bg-gray-700 text-gray-100'
+              }`}
+            >
+              {entry.text}
             </div>
-            <p className="text-xs text-gray-400 mt-0.5">
-              {agent.provider} / {agent.model}
-            </p>
           </div>
-          <Button onClick={onClose} variant="ghost" size="icon-sm" className="text-2xl">
+        ))}
+        {sending && (
+          <div className="flex justify-start">
+            <div className="bg-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 animate-pulse">
+              Thinking...
+            </div>
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      {sendError && (
+        <div className="mx-4 mb-2 bg-red-900/30 border border-red-500 text-red-300 text-xs rounded px-3 py-2 shrink-0">
+          {sendError}
+          <Button
+            onClick={() => setSendError(null)}
+            variant="ghost"
+            size="icon-sm"
+            className="float-right text-red-300 hover:text-red-100"
+          >
             ×
           </Button>
         </div>
+      )}
 
-        {/* Chat history */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {history.length === 0 && (
-            <p className="text-gray-500 text-sm text-center pt-8">
-              Send a message to start a conversation with this agent.
-            </p>
-          )}
-          {history.map((entry, i) => (
-            <div
-              key={i}
-              className={`flex ${entry.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${
-                  entry.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : entry.role === 'status'
-                      ? 'bg-red-900/40 text-red-300 border border-red-700/40'
-                      : 'bg-gray-700 text-gray-100'
-                }`}
-              >
-                {entry.text}
-              </div>
-            </div>
-          ))}
-          {sending && (
-            <div className="flex justify-start">
-              <div className="bg-gray-700 rounded-lg px-3 py-2 text-sm text-gray-400 animate-pulse">
-                Thinking...
-              </div>
-            </div>
-          )}
-          <div ref={bottomRef} />
+      <div className="p-4 border-t border-gray-700 shrink-0">
+        <div className="flex gap-2 items-end">
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={sending}
+            rows={2}
+            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+            className="flex-1 bg-gray-700 text-white rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+          />
+          <Button onClick={handleSend} disabled={sending || !input.trim()} className="shrink-0">
+            {sending ? '...' : 'Send'}
+          </Button>
+        </div>
+        {sessionId && (
+          <p className="text-xs text-gray-600 mt-1 font-mono truncate" title={sessionId}>
+            session: {sessionId}
+          </p>
+        )}
+      </div>
+    </>
+  )
+}
+
+// ── Debug pane ────────────────────────────────────────────────────────────────
+
+function BridgeDebugPane({ agent, sessionId }: { agent: Agent; sessionId: string | null }) {
+  const [draftMessage, setDraftMessage] = useState('')
+  const [previewing, setPreviewing] = useState(false)
+  const [previewResult, setPreviewResult] = useState<BridgeContextPreviewResult | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [showFullText, setShowFullText] = useState(false)
+
+  const [sessionLoading, setSessionLoading] = useState(false)
+  const [sessionDetail, setSessionDetail] = useState<BridgeSessionDetail | null>(null)
+  const [sessionError, setSessionError] = useState<string | null>(null)
+
+  const handlePreview = async () => {
+    if (previewing) return
+    setPreviewing(true)
+    setPreviewError(null)
+    setPreviewResult(null)
+    try {
+      const response = await fetch('/api/bridge/context-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: agent.bridge_id,
+          session_id: sessionId || undefined,
+          message: draftMessage || undefined,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Preview failed')
+      setPreviewResult(data)
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : 'Preview failed')
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  const handleLoadSession = async () => {
+    if (!sessionId || sessionLoading) return
+    setSessionLoading(true)
+    setSessionError(null)
+    try {
+      const response = await fetch(`/api/bridge/sessions/${sessionId}`)
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed to load session')
+      setSessionDetail(data)
+    } catch (err) {
+      setSessionError(err instanceof Error ? err.message : 'Failed to load session')
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-6 text-sm">
+
+      {/* Context Preview */}
+      <section>
+        <h4 className="text-white font-semibold mb-3">Context Preview</h4>
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            value={draftMessage}
+            onChange={(e) => setDraftMessage(e.target.value)}
+            placeholder="Optional: draft message for knowledge search…"
+            className="flex-1 bg-gray-700 text-white rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onKeyDown={(e) => { if (e.key === 'Enter') handlePreview() }}
+          />
+          <Button onClick={handlePreview} disabled={previewing} size="sm">
+            {previewing ? 'Loading…' : 'Preview Context'}
+          </Button>
         </div>
 
-        {/* Error banner */}
-        {sendError && (
-          <div className="mx-4 mb-2 bg-red-900/30 border border-red-500 text-red-300 text-xs rounded px-3 py-2 shrink-0">
-            {sendError}
-            <Button
-              onClick={() => setSendError(null)}
-              variant="ghost"
-              size="icon-sm"
-              className="float-right text-red-300 hover:text-red-100"
-            >
-              ×
-            </Button>
+        {previewError && (
+          <div className="text-red-400 bg-red-900/20 border border-red-700/40 rounded px-3 py-2 text-xs mb-3">
+            {previewError}
           </div>
         )}
 
-        {/* Input */}
-        <div className="p-4 border-t border-gray-700 shrink-0">
-          <div className="flex gap-2 items-end">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              disabled={sending}
-              rows={2}
-              placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-              className="flex-1 bg-gray-700 text-white rounded px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-            />
-            <Button onClick={handleSend} disabled={sending || !input.trim()} className="shrink-0">
-              {sending ? '...' : 'Send'}
-            </Button>
+        {previewResult && (
+          <div className="space-y-3">
+            {/* Section token breakdown */}
+            <div className="bg-gray-900 rounded p-3">
+              <p className="text-gray-400 text-xs mb-2 font-mono">
+                {agent.provider} / {previewResult.model}
+              </p>
+              <div className="space-y-1">
+                {previewResult.sections.map((s, i) => (
+                  <div key={i} className="flex justify-between font-mono text-xs">
+                    <span className={s.skipped ? 'text-gray-600' : 'text-gray-300'}>
+                      {s.name}{s.skipped ? ' (skipped)' : ''}
+                      {s.reason && <span className="text-gray-600 ml-1">— {s.reason}</span>}
+                    </span>
+                    <span className={s.skipped ? 'text-gray-600' : 'text-blue-400'}>
+                      {s.skipped ? '—' : `~${s.tokens} tok`}
+                    </span>
+                  </div>
+                ))}
+                <div className="border-t border-gray-700 mt-2 pt-1 flex justify-between font-mono text-xs font-semibold">
+                  <span className="text-gray-300">total</span>
+                  <span className="text-blue-300">~{previewResult.total_tokens} tok</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Injected knowledge docs */}
+            {previewResult.knowledge_docs?.length > 0 && (
+              <div className="bg-gray-900 rounded p-3">
+                <p className="text-gray-400 text-xs font-semibold mb-2">Injected Knowledge</p>
+                {previewResult.knowledge_docs.map((doc, i) => (
+                  <div key={i} className="flex justify-between text-xs text-gray-300 py-0.5">
+                    <span>{doc.title}</span>
+                    <span className="text-gray-500">{doc.scope}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Warnings */}
+            {previewResult.warnings?.length > 0 && (
+              <div className="text-yellow-400 bg-yellow-900/20 border border-yellow-700/40 rounded px-3 py-2 text-xs">
+                {previewResult.warnings.map((w, i) => <div key={i}>{w}</div>)}
+              </div>
+            )}
+
+            {/* Full assembled text (collapsible) */}
+            <div>
+              <button
+                onClick={() => setShowFullText(!showFullText)}
+                className="text-xs text-blue-400 hover:text-blue-300 mb-2"
+              >
+                {showFullText ? 'Hide' : 'Show'} assembled system prompt
+              </button>
+              {showFullText && (
+                <pre className="bg-gray-900 rounded p-3 text-xs text-gray-300 whitespace-pre-wrap break-words max-h-64 overflow-y-auto font-mono">
+                  {previewResult.full_text || '(empty)'}
+                </pre>
+              )}
+            </div>
           </div>
-          {sessionId && (
-            <p className="text-xs text-gray-600 mt-1 font-mono truncate" title={sessionId}>
-              session: {sessionId}
-            </p>
+        )}
+      </section>
+
+      {/* Session Viewer */}
+      <section>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-white font-semibold">Session Viewer</h4>
+          {sessionId ? (
+            <Button onClick={handleLoadSession} disabled={sessionLoading} size="sm" variant="secondary">
+              {sessionLoading ? 'Loading…' : 'Load Session'}
+            </Button>
+          ) : (
+            <span className="text-gray-500 text-xs">No session yet — send a message first</span>
           )}
         </div>
-      </div>
+
+        {sessionError && (
+          <div className="text-red-400 bg-red-900/20 border border-red-700/40 rounded px-3 py-2 text-xs">
+            {sessionError}
+          </div>
+        )}
+
+        {sessionDetail && (
+          <div className="space-y-3">
+            {/* Session meta */}
+            <div className="bg-gray-900 rounded p-3 text-xs font-mono text-gray-400 space-y-1">
+              <div><span className="text-gray-600">id:</span> {sessionDetail.session_id}</div>
+              <div><span className="text-gray-600">status:</span> {sessionDetail.status}</div>
+              <div>
+                <span className="text-gray-600">tokens:</span>{' '}
+                <span className="text-blue-400">
+                  {sessionDetail.total_input_tokens} in / {sessionDetail.total_output_tokens} out
+                </span>
+              </div>
+              {sessionDetail.session_notes && (
+                <div>
+                  <span className="text-gray-600">notes:</span>{' '}
+                  <span className="text-gray-300">{sessionDetail.session_notes}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Message history */}
+            {sessionDetail.messages.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-gray-500 text-xs">
+                  {sessionDetail.messages.length} message{sessionDetail.messages.length !== 1 ? 's' : ''}
+                </p>
+                {sessionDetail.messages.map((m) => (
+                  <div
+                    key={m.id}
+                    className={`rounded px-3 py-2 text-xs whitespace-pre-wrap break-words ${
+                      m.role === 'user'
+                        ? 'bg-blue-900/30 border border-blue-700/40 text-blue-200'
+                        : 'bg-gray-700/50 text-gray-300'
+                    }`}
+                  >
+                    <span className="font-semibold text-gray-500 mr-2">{m.role}:</span>
+                    {m.content}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Tasks */}
+            {sessionDetail.tasks.length > 0 && (
+              <div>
+                <p className="text-gray-500 text-xs mb-1">
+                  {sessionDetail.tasks.length} task{sessionDetail.tasks.length !== 1 ? 's' : ''}
+                </p>
+                {sessionDetail.tasks.map((t) => (
+                  <div key={t.id} className="flex justify-between font-mono text-xs text-gray-400 py-0.5">
+                    <span className="truncate max-w-[60%]" title={t.id}>{t.id.slice(0, 12)}…</span>
+                    <span className={
+                      t.status === 'completed' ? 'text-green-400' :
+                      t.status === 'failed' ? 'text-red-400' :
+                      t.status === 'streaming' ? 'text-yellow-400' : 'text-gray-500'
+                    }>{t.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Agent → Agent */}
+      <AgentToAgentPane fromAgentId={agent.bridge_id!} />
     </div>
+  )
+}
+
+// ── Agent → Agent pane ────────────────────────────────────────────────────────
+
+function AgentToAgentPane({ fromAgentId }: { fromAgentId: string }) {
+  const [toAgentId, setToAgentId] = useState('')
+  const [message, setMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [result, setResult] = useState<BridgeAgentMessageResult | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [agents, setAgents] = useState<Array<{ id: string; name: string }>>([])
+
+  // Load available bridge agents for the target selector.
+  useEffect(() => {
+    fetch('/api/bridge/agents')
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data?.agents) {
+          setAgents(
+            data.agents
+              .filter((a: any) => a.id !== fromAgentId && a.framework === 'mycelium')
+              .map((a: any) => ({ id: a.id, name: a.name }))
+          )
+        }
+      })
+      .catch(() => {})
+  }, [fromAgentId])
+
+  const handleSend = async () => {
+    if (!toAgentId || !message.trim() || sending) return
+    setSending(true)
+    setError(null)
+    setResult(null)
+    try {
+      const response = await fetch('/api/bridge/agents/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_agent_id: fromAgentId,
+          to_agent_id: toAgentId,
+          message: message.trim(),
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Failed')
+      setResult(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <section>
+      <h4 className="text-white font-semibold mb-3">Agent → Agent</h4>
+
+      <div className="space-y-2 mb-3">
+        <div className="flex gap-2">
+          <select
+            value={toAgentId}
+            onChange={(e) => setToAgentId(e.target.value)}
+            className="flex-1 bg-gray-700 text-white rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">Select target agent…</option>
+            {agents.map((a) => (
+              <option key={a.id} value={a.id}>{a.name} ({a.id})</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="Message to send…"
+            className="flex-1 bg-gray-700 text-white rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSend() }}
+          />
+          <Button onClick={handleSend} disabled={!toAgentId || !message.trim() || sending} size="sm">
+            {sending ? '…' : 'Send'}
+          </Button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="text-red-400 bg-red-900/20 border border-red-700/40 rounded px-3 py-2 text-xs mb-2">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="bg-gray-900 rounded p-3 text-xs space-y-2">
+          <div className="text-gray-300 whitespace-pre-wrap break-words">{result.response_text}</div>
+          <div className="flex gap-4 text-gray-500 font-mono pt-1 border-t border-gray-700">
+            <span>{result.input_tokens} in</span>
+            <span>{result.output_tokens} out</span>
+            <span className="truncate" title={result.session_id}>session: {result.session_id.slice(0, 12)}…</span>
+          </div>
+        </div>
+      )}
+    </section>
   )
 }
 

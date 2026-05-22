@@ -855,7 +855,7 @@ export function CreateAgentModal({
     dockerNetwork: 'none' as 'none' | 'bridge',
     session_key: '',
     write_to_gateway: true,
-    provision_openclaw_workspace: true,
+    provision_openclaw_workspace: false,
   })
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)

@@ -9,6 +9,7 @@ import { requireRole } from '@/lib/auth'
 import { callOpenClawGateway } from '@/lib/openclaw-gateway'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { bridgeSessionsList } from '@/lib/mycelium-bridge'
 
 // Upstream default 90 minutes was too lax (every recently-touched jsonl
 // stayed "active"); 2 minutes was too tight. 15 minutes matches the
@@ -31,11 +32,15 @@ export async function GET(request: NextRequest) {
     const opencodeSessions = getLocalOpenCodeSessions()
     const localMerged = mergeLocalSessions(claudeSessions, codexSessions, hermesSessions, opencodeSessions)
 
-    if (mappedGatewaySessions.length === 0 && localMerged.length === 0) {
-      return NextResponse.json({ sessions: [] })
+    // Merge bridge (Mycelium) sessions — silently skip if bridge is offline
+    let bridgeSessions: Array<Record<string, any>> = []
+    try {
+      bridgeSessions = await getBridgeSessions()
+    } catch {
+      // Bridge offline — continue without bridge sessions
     }
 
-    const merged = dedupeAndSortSessions([...mappedGatewaySessions, ...localMerged])
+    const merged = dedupeAndSortSessions([...mappedGatewaySessions, ...localMerged, ...bridgeSessions])
     return NextResponse.json({ sessions: merged })
   } catch (error) {
     logger.error({ err: error }, 'Sessions API error')
@@ -381,6 +386,30 @@ function dedupeAndSortSessions(merged: Array<Record<string, any>>) {
   return Array.from(deduped.values())
     .sort((a, b) => Number(b?.lastActivity || 0) - Number(a?.lastActivity || 0))
     .slice(0, 100)
+}
+
+async function getBridgeSessions(): Promise<Array<Record<string, any>>> {
+  const sessions = await bridgeSessionsList()
+  return sessions.map((s) => {
+    const updatedAtMs = s.updated_at * 1000
+    const createdAtMs = s.created_at * 1000
+    const isActive = s.status === 'active'
+    return {
+      id: s.id,
+      key: s.id,
+      agent: s.agent_id,
+      kind: 'mycelium',
+      age: formatAge(updatedAtMs),
+      model: '—',
+      tokens: '—',
+      channel: 'bridge',
+      flags: [],
+      active: isActive,
+      startTime: createdAtMs,
+      lastActivity: updatedAtMs,
+      source: 'bridge',
+    }
+  })
 }
 
 function formatTokens(n: number): string {

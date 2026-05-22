@@ -2,7 +2,7 @@
 
 import Image from 'next/image'
 
-type SessionKind = 'claude-code' | 'codex-cli' | 'hermes' | 'opencode' | 'gateway'
+type SessionKind = 'claude-code' | 'codex-cli' | 'hermes' | 'opencode' | 'gateway' | 'mycelium'
 
 const SESSION_KIND_META: Record<SessionKind, {
   label: string
@@ -41,6 +41,11 @@ const SESSION_KIND_META: Record<SessionKind, {
     label: 'Gateway',
     shortLabel: 'GW',
     pillClassName: 'bg-muted text-muted-foreground',
+  },
+  mycelium: {
+    label: 'Mycelium Bridge',
+    shortLabel: 'MY',
+    pillClassName: 'bg-emerald-500/15 text-emerald-300/80',
   },
 }
 

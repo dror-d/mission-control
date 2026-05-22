@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { readFile, readdir, stat } from 'fs/promises'
+import { readFile, readdir } from 'fs/promises'
 import { join } from 'path'
 import { config } from '@/lib/config'
 import { requireRole } from '@/lib/auth'
 import { readLimiter, mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { bridgeLogsRecent } from '@/lib/mycelium-bridge'
 
 const LOGS_PATH = config.logsDir
 
@@ -203,6 +204,16 @@ export async function GET(request: NextRequest) {
         logs.push(...entries)
       }
 
+      // Merge bridge logs (silently skip if bridge is unreachable)
+      if (!source || source === 'bridge') {
+        try {
+          const bridgeLogs = await bridgeLogsRecent(200)
+          logs.push(...bridgeLogs)
+        } catch {
+          // Bridge may be offline — filesystem logs still served
+        }
+      }
+
       // Sort newest first
       logs.sort((a, b) => b.timestamp - a.timestamp)
 
@@ -228,6 +239,10 @@ export async function GET(request: NextRequest) {
     if (action === 'sources') {
       const logFiles = await discoverLogFiles()
       const sources = logFiles.map(f => f.source)
+      // Always include 'bridge' as a source since the bridge ring buffer is always available
+      if (!sources.includes('bridge')) {
+        sources.unshift('bridge')
+      }
       return NextResponse.json({ sources })
     }
 
