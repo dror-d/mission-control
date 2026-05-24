@@ -102,7 +102,9 @@ export function AgentSquadPanelPhase3() {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showQuickSpawnModal, setShowQuickSpawnModal] = useState(false)
   const [bridgeAgents, setBridgeAgents] = useState<BridgeAgentView[]>([])
+  const [bridgeTokens, setBridgeTokens] = useState<Record<string, { input: number; output: number; tasks: number }>>({})
   const [selectedBridgeAgent, setSelectedBridgeAgent] = useState<BridgeAgentView | null>(null)
+  const [editingBridgeAgent, setEditingBridgeAgent] = useState<BridgeAgentView | null>(null)
   const [showCreateBridgeModal, setShowCreateBridgeModal] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -163,12 +165,23 @@ export function AgentSquadPanelPhase3() {
       const data = await response.json()
       setAgents(data.agents || [])
 
-      // Fetch Mycelium bridge agents in parallel — failure is non-fatal
+      // Fetch Mycelium bridge agents + token usage in parallel — failure is non-fatal
       try {
-        const bridgeRes = await fetch('/api/bridge/agents')
+        const [bridgeRes, costRes] = await Promise.all([
+          fetch('/api/bridge/agents'),
+          fetch('/api/bridge/cost'),
+        ])
         if (bridgeRes.ok) {
           const bData = await bridgeRes.json()
           setBridgeAgents(bData.agents || [])
+        }
+        if (costRes.ok) {
+          const cData = await costRes.json()
+          const map: Record<string, { input: number; output: number; tasks: number }> = {}
+          for (const a of (cData.agents || [])) {
+            map[a.agent_id] = { input: a.input_tokens, output: a.output_tokens, tasks: a.task_count }
+          }
+          setBridgeTokens(map)
         }
       } catch {
         // Bridge unavailable — keep showing existing bridge agents
@@ -461,9 +474,29 @@ export function AgentSquadPanelPhase3() {
                     {ba.status}
                   </span>
                 </div>
+                {/* Token usage */}
+                {bridgeTokens[ba.id] && (
+                  <div className="flex items-center gap-2 mt-2 text-[10px] text-violet-300/50">
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                      <path d="M8 2v12M4 6l4-4 4 4M4 10l4 4 4-4" />
+                    </svg>
+                    <span title={`↑ ${bridgeTokens[ba.id].input.toLocaleString()} in  ↓ ${bridgeTokens[ba.id].output.toLocaleString()} out`}>
+                      {((bridgeTokens[ba.id].input + bridgeTokens[ba.id].output) / 1000).toFixed(1)}k tokens
+                    </span>
+                    <span className="text-violet-300/30">·</span>
+                    <span>{bridgeTokens[ba.id].tasks} tasks</span>
+                  </div>
+                )}
                 {/* Footer */}
                 <div className="flex items-center justify-between mt-2 pt-2 border-t border-violet-500/20">
                   <span className="text-[11px] text-violet-400/70">Click to message</span>
+                  <button
+                    type="button"
+                    onClick={e => { e.stopPropagation(); setEditingBridgeAgent(ba) }}
+                    className="text-[11px] text-muted-foreground/50 hover:text-muted-foreground transition-colors px-1"
+                  >
+                    Edit
+                  </button>
                 </div>
               </div>
             ))}
@@ -620,6 +653,20 @@ export function AgentSquadPanelPhase3() {
         <BridgeAgentModal
           agent={selectedBridgeAgent}
           onClose={() => setSelectedBridgeAgent(null)}
+        />
+      )}
+
+      {editingBridgeAgent && (
+        <EditBridgeAgentModal
+          agent={editingBridgeAgent}
+          onClose={() => setEditingBridgeAgent(null)}
+          onSaved={() => {
+            setEditingBridgeAgent(null)
+            fetch('/api/bridge/agents')
+              .then(r => r.ok ? r.json() : { agents: [] })
+              .then(d => setBridgeAgents(d.agents || []))
+              .catch(() => {})
+          }}
         />
       )}
 
@@ -1308,10 +1355,338 @@ interface BridgeAgentView {
   profile_status: string
 }
 
-const BRIDGE_DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b:free'
+const BRIDGE_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash:free'
+
+// OpenRouter models — verified 2026-05-24 against /api/v1/models (358 total)
+// ⚠ = no function-call support; will fail for agents that have tools enabled
+const OPENROUTER_MODELS = [
+  // ── Free · tool-capable ───────────────────────────────────────────────────
+  { value: 'deepseek/deepseek-v4-flash:free',                label: '[free] DeepSeek V4 Flash' },
+  { value: 'openai/gpt-oss-20b:free',                        label: '[free] OpenAI GPT-OSS 20B' },
+  { value: 'openai/gpt-oss-120b:free',                       label: '[free] OpenAI GPT-OSS 120B' },
+  { value: 'google/gemma-4-31b-it:free',                     label: '[free] Google Gemma 4 31B' },
+  { value: 'google/gemma-4-26b-a4b-it:free',                 label: '[free] Google Gemma 4 26B A4B' },
+  { value: 'meta-llama/llama-3.3-70b-instruct:free',         label: '[free] Llama 3.3 70B' },
+  { value: 'nvidia/nemotron-nano-9b-v2:free',                label: '[free] NVIDIA Nemotron Nano 9B' },
+  { value: 'nvidia/nemotron-3-nano-30b-a3b:free',            label: '[free] NVIDIA Nemotron 3 Nano 30B' },
+  { value: 'nvidia/nemotron-3-super-120b-a12b:free',         label: '[free] NVIDIA Nemotron 120B (slow)' },
+  { value: 'qwen/qwen3-next-80b-a3b-instruct:free',          label: '[free] Qwen3 Next 80B' },
+  { value: 'qwen/qwen3-coder:free',                          label: '[free] Qwen3 Coder 480B' },
+  { value: 'minimax/minimax-m2.5:free',                      label: '[free] MiniMax M2.5' },
+  { value: 'poolside/laguna-xs.2:free',                      label: '[free] Poolside Laguna XS.2' },
+  { value: 'poolside/laguna-m.1:free',                       label: '[free] Poolside Laguna M.1' },
+  { value: 'arcee-ai/trinity-large-thinking:free',           label: '[free] Arcee Trinity Large Thinking' },
+  { value: 'z-ai/glm-4.5-air:free',                         label: '[free] GLM 4.5 Air' },
+  // ── Free · no tool support ────────────────────────────────────────────────
+  { value: 'meta-llama/llama-3.2-3b-instruct:free',          label: '[free ⚠no-tools] Llama 3.2 3B' },
+  { value: 'nousresearch/hermes-3-llama-3.1-405b:free',      label: '[free ⚠no-tools] Hermes 3 405B' },
+  { value: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', label: '[free ⚠no-tools] Dolphin Mistral 24B' },
+  // ── Anthropic ─────────────────────────────────────────────────────────────
+  { value: 'anthropic/claude-3-haiku',                       label: 'Claude 3 Haiku ($0.25/M)' },
+  { value: 'anthropic/claude-3.5-haiku',                     label: 'Claude 3.5 Haiku ($0.80/M)' },
+  { value: 'anthropic/claude-haiku-4.5',                     label: 'Claude Haiku 4.5 ($1/M)' },
+  { value: 'anthropic/claude-sonnet-4.5',                    label: 'Claude Sonnet 4.5 ($3/M)' },
+  { value: 'anthropic/claude-sonnet-4.6',                    label: 'Claude Sonnet 4.6 ($3/M)' },
+  { value: 'anthropic/claude-opus-4.5',                      label: 'Claude Opus 4.5 ($5/M)' },
+  // ── OpenAI ────────────────────────────────────────────────────────────────
+  { value: 'openai/gpt-4o-mini',                             label: 'GPT-4o Mini ($0.15/M)' },
+  { value: 'openai/gpt-4.1-mini',                            label: 'GPT-4.1 Mini ($0.40/M)' },
+  { value: 'openai/gpt-4o',                                  label: 'GPT-4o ($2.50/M)' },
+  { value: 'openai/gpt-4.1',                                 label: 'GPT-4.1 ($2/M)' },
+  { value: 'openai/o4-mini',                                 label: 'o4 Mini ($1.10/M)' },
+  // ── Google ────────────────────────────────────────────────────────────────
+  { value: 'google/gemini-2.0-flash-001',                    label: 'Gemini 2.0 Flash ($0.10/M)' },
+  { value: 'google/gemini-2.5-flash',                        label: 'Gemini 2.5 Flash ($0.30/M)' },
+  { value: 'google/gemini-2.5-pro',                          label: 'Gemini 2.5 Pro ($1.25/M)' },
+  // ── DeepSeek ──────────────────────────────────────────────────────────────
+  { value: 'deepseek/deepseek-v4-flash',                     label: 'DeepSeek V4 Flash ($0.10/M)' },
+  { value: 'deepseek/deepseek-chat-v3-0324',                 label: 'DeepSeek V3 ($0.20/M)' },
+  { value: 'deepseek/deepseek-r1',                           label: 'DeepSeek R1 ($0.70/M)' },
+  // ── Mistral ───────────────────────────────────────────────────────────────
+  { value: 'mistralai/mistral-nemo',                         label: 'Mistral Nemo ($0.02/M)' },
+  { value: 'mistralai/mistral-small-3.2-24b-instruct',       label: 'Mistral Small 3.2 24B ($0.07/M)' },
+  { value: 'mistralai/mistral-large-2512',                   label: 'Mistral Large ($0.50/M)' },
+  // ── Meta ──────────────────────────────────────────────────────────────────
+  { value: 'meta-llama/llama-3.1-8b-instruct',               label: 'Llama 3.1 8B ($0.02/M)' },
+  { value: 'meta-llama/llama-3.3-70b-instruct',              label: 'Llama 3.3 70B ($0.10/M)' },
+  { value: 'meta-llama/llama-4-scout',                       label: 'Llama 4 Scout ($0.08/M)' },
+  // ── Qwen ──────────────────────────────────────────────────────────────────
+  { value: 'qwen/qwen3-8b',                                  label: 'Qwen3 8B ($0.05/M)' },
+  { value: 'qwen/qwen3-32b',                                 label: 'Qwen3 32B ($0.08/M)' },
+  { value: 'qwen/qwen3-235b-a22b',                           label: 'Qwen3 235B A22B ($0.45/M)' },
+  // ── xAI ───────────────────────────────────────────────────────────────────
+  { value: 'x-ai/grok-4.3',                                  label: 'Grok 4.3 ($1.25/M)' },
+]
+
+// Anthropic direct models
+const CLAUDE_MODELS = [
+  { value: 'claude-haiku-4-5-20251001',   label: 'Claude Haiku 4.5' },
+  { value: 'claude-sonnet-4-5-20251022',  label: 'Claude Sonnet 4.5' },
+  { value: 'claude-opus-4-5-20251101',    label: 'Claude Opus 4.5' },
+]
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+// ── BridgeModelSelect ─────────────────────────────────────────────────────────
+
+const AVAILABLE_TOOLS_LIST = [
+  { id: 'agent_message',    desc: 'Send messages to other agents and receive their response' },
+  { id: 'context_preview',  desc: 'Preview how context will be assembled for a session' },
+  { id: 'session_lookup',   desc: 'Read messages and tasks from existing sessions' },
+  { id: 'knowledge_search', desc: 'Search the shared knowledge base' },
+  { id: 'current_time',     desc: 'Get the current UTC time' },
+]
+
+function BridgeModelSelect({
+  provider,
+  value,
+  onChange,
+}: {
+  provider: string
+  value: string
+  onChange: (model: string) => void
+}) {
+  const models = provider === 'claude' ? CLAUDE_MODELS : OPENROUTER_MODELS
+  const isKnown = models.some(m => m.value === value)
+  const [custom, setCustom] = useState(!isKnown && value !== '')
+
+  const handleSelectChange = (v: string) => {
+    if (v === '__custom__') {
+      setCustom(true)
+      onChange('')
+    } else {
+      setCustom(false)
+      onChange(v)
+    }
+  }
+
+  return (
+    <div>
+      <label className="block text-sm text-muted-foreground mb-1">Model</label>
+      {!custom ? (
+        <select
+          value={value || ''}
+          onChange={e => handleSelectChange(e.target.value)}
+          required
+          className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground font-mono text-sm focus:border-violet-500/50"
+        >
+          <option value="">— select a model —</option>
+          {models.map(m => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+          <option value="__custom__">Custom model ID…</option>
+        </select>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            required
+            placeholder="provider/model-name"
+            className="flex-1 px-3 py-2 bg-surface-1 border border-border rounded text-foreground font-mono text-sm focus:border-violet-500/50"
+          />
+          <button
+            type="button"
+            onClick={() => { setCustom(false); onChange('') }}
+            className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground border border-border rounded"
+          >
+            List
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── ToolCheckboxes ─────────────────────────────────────────────────────────────
+
+function ToolCheckboxes({
+  selected,
+  onChange,
+}: {
+  selected: string[]
+  onChange: (tools: string[]) => void
+}) {
+  const toggle = (id: string) =>
+    onChange(selected.includes(id) ? selected.filter(t => t !== id) : [...selected, id])
+
+  return (
+    <div>
+      <label className="block text-sm text-muted-foreground mb-2">Tools (optional)</label>
+      <div className="space-y-1.5">
+        {AVAILABLE_TOOLS_LIST.map(tool => (
+          <label key={tool.id} className="flex items-start gap-2.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.includes(tool.id)}
+              onChange={() => toggle(tool.id)}
+              className="mt-0.5 accent-violet-500"
+            />
+            <span className="text-sm leading-tight">
+              <span className="text-foreground font-mono">{tool.id}</span>
+              <span className="text-muted-foreground/60 text-xs ml-1.5">— {tool.desc}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── EditBridgeAgentModal ──────────────────────────────────────────────────────
+
+function EditBridgeAgentModal({
+  agent,
+  onClose,
+  onSaved,
+}: {
+  agent: BridgeAgentView
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [form, setForm] = useState({
+    name: agent.name,
+    provider: agent.provider,
+    model: agent.model,
+    system_prompt: agent.system_prompt || '',
+    tools: (agent as any).tools as string[] || [],
+  })
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch(`/api/bridge/agents/${agent.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name || undefined,
+          provider: form.provider || undefined,
+          model: form.model || undefined,
+          system_prompt: form.system_prompt || undefined,
+          tools: form.tools,
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json()
+        throw new Error(d.error || 'Failed to update agent')
+      }
+      onSaved()
+    } catch (e: any) {
+      setErr(e.message || 'Error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const res = await fetch(`/api/bridge/agents/${agent.id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const d = await res.json()
+        throw new Error(d.error || 'Failed to delete agent')
+      }
+      onSaved()
+    } catch (e: any) {
+      setErr(e.message || 'Error')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+      <div className="bg-card border border-violet-500/30 rounded-xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <h3 className="text-lg font-bold text-foreground">Edit Agent</h3>
+              <p className="text-xs text-muted-foreground font-mono mt-0.5">id: {agent.id}</p>
+            </div>
+            <Button onClick={onClose} type="button" variant="ghost" size="icon-sm" className="text-xl">×</Button>
+          </div>
+
+          {err && (
+            <div className="bg-red-500/10 border border-red-500/20 text-red-400 text-sm rounded px-3 py-2">
+              {err}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Name</label>
+            <input
+              value={form.name}
+              onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50 focus:ring-1 focus:ring-violet-500/50"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">Provider</label>
+            <select
+              value={form.provider}
+              onChange={e => setForm(p => ({ ...p, provider: e.target.value, model: '' }))}
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
+            >
+              <option value="openrouter">OpenRouter</option>
+              <option value="claude">Claude (Anthropic)</option>
+            </select>
+          </div>
+
+          <BridgeModelSelect
+            provider={form.provider}
+            value={form.model}
+            onChange={model => setForm(p => ({ ...p, model }))}
+          />
+
+          <div>
+            <label className="block text-sm text-muted-foreground mb-1">System Prompt</label>
+            <textarea
+              value={form.system_prompt}
+              onChange={e => setForm(p => ({ ...p, system_prompt: e.target.value }))}
+              rows={4}
+              placeholder="You are a helpful assistant."
+              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
+            />
+          </div>
+
+          <ToolCheckboxes selected={form.tools} onChange={tools => setForm(p => ({ ...p, tools }))} />
+
+          <div className="flex gap-3 pt-2">
+            <Button type="submit" disabled={busy} className="flex-1 bg-violet-600 hover:bg-violet-700 text-white">
+              {busy ? 'Saving...' : 'Save'}
+            </Button>
+            <Button type="button" onClick={onClose} variant="secondary">Cancel</Button>
+          </div>
+
+          <div className="border-t border-border/30 pt-3">
+            {!confirmDelete ? (
+              <button
+                type="button"
+                onClick={() => setConfirmDelete(true)}
+                className="text-xs text-red-400/70 hover:text-red-400 transition-colors"
+              >
+                Delete agent…
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-red-400">Delete {agent.name}?</span>
+                <button type="button" onClick={handleDelete} disabled={busy} className="text-xs text-red-400 font-semibold hover:text-red-300">Yes, delete</button>
+                <button type="button" onClick={() => setConfirmDelete(false)} className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+              </div>
+            )}
+          </div>
+        </form>
+      </div>
+    </div>
+  )
 }
 
 // ── CreateBridgeAgentModal ────────────────────────────────────────────────────
@@ -1329,6 +1704,7 @@ function CreateBridgeAgentModal({
     provider: 'openrouter',
     model: BRIDGE_DEFAULT_MODEL,
     system_prompt: '',
+    tools: [] as string[],
   })
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -1359,6 +1735,7 @@ function CreateBridgeAgentModal({
           provider: form.provider,
           model: form.model,
           system_prompt: form.system_prompt || undefined,
+          tools: form.tools.length > 0 ? form.tools : undefined,
           channels: ['dashboard'],
           status: 'online',
         }),
@@ -1415,7 +1792,7 @@ function CreateBridgeAgentModal({
             <label className="block text-sm text-muted-foreground mb-1">Provider</label>
             <select
               value={form.provider}
-              onChange={e => setForm(p => ({ ...p, provider: e.target.value }))}
+              onChange={e => setForm(p => ({ ...p, provider: e.target.value, model: '' }))}
               className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
             >
               <option value="openrouter">OpenRouter</option>
@@ -1423,16 +1800,11 @@ function CreateBridgeAgentModal({
             </select>
           </div>
 
-          <div>
-            <label className="block text-sm text-muted-foreground mb-1">Model</label>
-            <input
-              value={form.model}
-              onChange={e => setForm(p => ({ ...p, model: e.target.value }))}
-              required
-              placeholder={BRIDGE_DEFAULT_MODEL}
-              className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground font-mono text-sm focus:border-violet-500/50"
-            />
-          </div>
+          <BridgeModelSelect
+            provider={form.provider}
+            value={form.model}
+            onChange={model => setForm(p => ({ ...p, model }))}
+          />
 
           <div>
             <label className="block text-sm text-muted-foreground mb-1">System Prompt (optional)</label>
@@ -1444,6 +1816,8 @@ function CreateBridgeAgentModal({
               className="w-full px-3 py-2 bg-surface-1 border border-border rounded text-foreground focus:border-violet-500/50"
             />
           </div>
+
+          <ToolCheckboxes selected={form.tools} onChange={tools => setForm(p => ({ ...p, tools }))} />
 
           <div className="flex gap-3 pt-2">
             <Button type="submit" disabled={busy} className="flex-1 bg-violet-600 hover:bg-violet-700 text-white">
@@ -1476,7 +1850,19 @@ function BridgeAgentModal({
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [elapsedSecs, setElapsedSecs] = useState(0)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const elapsedRef = useRef<NodeJS.Timeout | undefined>(undefined)
+
+  useEffect(() => {
+    if (sending) {
+      setElapsedSecs(0)
+      elapsedRef.current = setInterval(() => setElapsedSecs(s => s + 1), 1000)
+    } else {
+      clearInterval(elapsedRef.current)
+    }
+    return () => clearInterval(elapsedRef.current)
+  }, [sending])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -1571,7 +1957,7 @@ function BridgeAgentModal({
           {sending && (
             <div className="flex justify-start">
               <div className="bg-surface-2 border border-border/50 rounded-xl px-3 py-2 text-sm text-muted-foreground animate-pulse">
-                Thinking...
+                Thinking... {elapsedSecs > 0 && <span className="text-xs opacity-60">({elapsedSecs}s)</span>}
               </div>
             </div>
           )}

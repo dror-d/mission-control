@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { useMissionControl, type ExecApprovalRequest } from '@/store'
 import { useWebSocket } from '@/lib/websocket'
 import { matchesGlobPattern } from '@/lib/exec-approval-utils'
+import type { BridgePendingApproval } from '@/lib/mycelium-bridge'
 
 type FilterTab = 'all' | 'pending' | 'resolved'
 type PanelView = 'approvals' | 'allowlist'
@@ -161,6 +162,9 @@ export function ExecApprovalPanel() {
               ))}
             </div>
           )}
+
+          {/* Bridge agent tool approvals */}
+          <BridgeApprovalSection />
         </>
       ) : (
         <AllowlistEditor execApprovals={execApprovals} />
@@ -534,6 +538,131 @@ function ApprovalCard({
             {approval.status === 'approved' ? t('statusApproved') : t('statusDenied')}
           </span>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ── Bridge Tool Approvals ──────────────────────────────────────────────────────
+
+const BRIDGE_RISK_BORDER: Record<string, string> = {
+  low: 'border-l-green-500',
+  medium: 'border-l-yellow-500',
+  high: 'border-l-orange-500',
+  critical: 'border-l-red-500',
+}
+
+const BRIDGE_RISK_BADGE: Record<string, { bg: string; text: string }> = {
+  low: { bg: 'bg-green-500/20', text: 'text-green-400' },
+  medium: { bg: 'bg-yellow-500/20', text: 'text-yellow-400' },
+  high: { bg: 'bg-orange-500/20', text: 'text-orange-400' },
+  critical: { bg: 'bg-red-500/20', text: 'text-red-400' },
+}
+
+/**
+ * BridgeApprovalSection polls /api/bridge/approvals every 5 seconds and
+ * renders pending Mycelium agent tool-call approvals. Shows nothing when the
+ * bridge is offline or has no pending requests.
+ */
+function BridgeApprovalSection() {
+  const [approvals, setApprovals] = useState<BridgePendingApproval[]>([])
+  const [resolving, setResolving] = useState<Record<string, boolean>>({})
+
+  const poll = useCallback(async () => {
+    try {
+      const res = await fetch('/api/bridge/approvals')
+      if (!res.ok) return
+      const data = await res.json()
+      setApprovals(data.approvals ?? [])
+    } catch {
+      // Bridge offline — silently skip
+    }
+  }, [])
+
+  useEffect(() => {
+    poll()
+    const interval = setInterval(poll, 5000)
+    return () => clearInterval(interval)
+  }, [poll])
+
+  const handleResolve = async (id: string, approved: boolean) => {
+    setResolving(prev => ({ ...prev, [id]: true }))
+    try {
+      await fetch('/api/bridge/approvals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, approved }),
+      })
+      setApprovals(prev => prev.filter(a => a.id !== id))
+    } catch {
+      // Show error state briefly
+    } finally {
+      setResolving(prev => ({ ...prev, [id]: false }))
+    }
+  }
+
+  if (approvals.length === 0) return null
+
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-2 mb-3">
+        <h3 className="text-sm font-medium text-foreground">Mycelium Agent Tool Approvals</h3>
+        <span className="inline-flex items-center rounded-full bg-violet-500/20 px-2 py-0.5 text-xs font-medium text-violet-400 animate-pulse">
+          {approvals.length} pending
+        </span>
+      </div>
+      <div className="space-y-3">
+        {approvals.map(a => {
+          const border = BRIDGE_RISK_BORDER[a.risk] ?? 'border-l-gray-500'
+          const badge = BRIDGE_RISK_BADGE[a.risk] ?? { bg: 'bg-gray-500/20', text: 'text-gray-400' }
+          const busy = resolving[a.id]
+          const expiresIn = Math.max(0, Math.floor((a.expires_at - Date.now()) / 1000))
+          return (
+            <div key={a.id} className={`rounded-lg border border-border bg-card p-4 border-l-4 ${border}`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-xs font-mono text-violet-400 bg-violet-500/10 rounded px-1.5 py-0.5">
+                    {a.agent_id}
+                  </span>
+                  <span className="font-mono text-xs bg-secondary rounded px-1.5 py-0.5 text-muted-foreground">
+                    {a.tool_name}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${badge.bg} ${badge.text}`}>
+                    {a.risk}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{expiresIn}s left</span>
+                </div>
+              </div>
+
+              {Object.keys(a.tool_args ?? {}).length > 0 && (
+                <pre className="bg-secondary rounded p-2 text-xs font-mono overflow-auto max-h-24 text-foreground mb-2 border border-border">
+                  {JSON.stringify(a.tool_args, null, 2)}
+                </pre>
+              )}
+
+              <div className="flex items-center gap-2 mt-2">
+                <Button
+                  size="sm"
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                  disabled={busy}
+                  onClick={() => handleResolve(a.id, true)}
+                >
+                  Approve
+                </Button>
+                <Button
+                  size="sm"
+                  className="bg-red-600 hover:bg-red-700 text-white"
+                  disabled={busy}
+                  onClick={() => handleResolve(a.id, false)}
+                >
+                  Deny
+                </Button>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

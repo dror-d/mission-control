@@ -36,6 +36,7 @@ const navGroups: NavGroup[] = [
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
       { id: 'memory', label: 'Memory', icon: <MemoryIcon />, priority: false },
+      { id: 'bridge-knowledge', label: 'Knowledge', icon: <KnowledgeIcon />, priority: false },
     ],
   },
   {
@@ -91,6 +92,7 @@ const navItemTranslationKeys: Record<string, string> = {
   channels: 'channels',
   skills: 'skills',
   memory: 'memory',
+  'bridge-knowledge': 'knowledge',
   activity: 'activity',
   logs: 'logs',
   'cost-tracker': 'costTracker',
@@ -1314,6 +1316,15 @@ function MemoryIcon() {
       <ellipse cx="8" cy="8" rx="6" ry="3" />
       <path d="M2 8v3c0 1.7 2.7 3 6 3s6-1.3 6-3V8" />
       <path d="M2 5v3c0 1.7 2.7 3 6 3s6-1.3 6-3V5" />
+    </svg>
+  )
+}
+
+function KnowledgeIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 2h8a1 1 0 011 1v10a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" />
+      <path d="M5 5.5h6M5 8h6M5 10.5h4" />
     </svg>
   )
 }

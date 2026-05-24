@@ -44,6 +44,21 @@ export async function bridgeAgentsList(): Promise<MyceliumAgent[]> {
   return all.filter((a) => a.framework === 'mycelium')
 }
 
+export interface MyceliumAgentUpdateParams {
+  id: string
+  name?: string
+  provider?: string
+  model?: string
+  system_prompt?: string
+  tools?: string[]
+  channels?: string[]
+  status?: string
+}
+
+export async function bridgeAgentsUpdate(params: MyceliumAgentUpdateParams): Promise<MyceliumAgent> {
+  return callOpenClawGateway<MyceliumAgent>('agents_update', params)
+}
+
 export async function bridgeAgentsDelete(id: string): Promise<void> {
   await callOpenClawGateway('agents_delete', { id })
 }
@@ -55,14 +70,14 @@ export type SessionSendResult = GatewayStreamResult
  * Send a message to a Mycelium Bridge agent and await the full response.
  * Keeps the WebSocket open to collect streaming session.message events,
  * resolving once task.updated carries status completed or failed.
- * Timeout: 60 s (LLM calls can be slow on free models).
+ * Timeout: 180 s (free-tier models on OpenRouter can queue for 2-3 minutes).
  */
 export async function bridgeSessionsSend(params: {
   agent_id: string
   session_id?: string
   message: string
 }): Promise<SessionSendResult> {
-  return callOpenClawGatewayCollectEvents('sessions_send', params, 60000)
+  return callOpenClawGatewayCollectEvents('sessions_send', params, 180000)
 }
 
 // ── Soul document ──────────────────────────────────────────────────────────────
@@ -326,6 +341,31 @@ export async function bridgeSessionsList(): Promise<BridgeSessionSummary[]> {
   return result?.sessions ?? []
 }
 
+export async function bridgeSessionsDelete(sessionId: string): Promise<void> {
+  await callOpenClawGateway('sessions_delete', { session_id: sessionId })
+}
+
+// ── Token Usage / Cost Tracker ────────────────────────────────────────────────
+
+export interface BridgeAgentTokenSummary {
+  agent_id: string
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  task_count: number
+}
+
+export interface BridgeTokenUsageSummary {
+  agents: BridgeAgentTokenSummary[]
+  total_input_tokens: number
+  total_output_tokens: number
+  total_tokens: number
+}
+
+export async function bridgeTokenUsageSummary(): Promise<BridgeTokenUsageSummary> {
+  return callOpenClawGateway<BridgeTokenUsageSummary>('token_usage_summary', {})
+}
+
 // ── Log Streaming (Phase 2J) ──────────────────────────────────────────────────
 
 export interface BridgeLogEntry {
@@ -344,4 +384,29 @@ export async function bridgeLogsRecent(limit = 200): Promise<BridgeLogEntry[]> {
     'logs_recent', { limit }
   )
   return result?.logs ?? []
+}
+
+// ── Approvals (Phase 3A gate) ─────────────────────────────────────────────────
+
+export interface BridgePendingApproval {
+  id: string
+  agent_id: string
+  tool_name: string
+  tool_args: Record<string, any>
+  risk: 'low' | 'medium' | 'high' | 'critical'
+  created_at: number  // Unix milliseconds
+  expires_at: number  // Unix milliseconds
+}
+
+/** List all currently pending tool-approval requests from the bridge. */
+export async function bridgeApprovalsList(): Promise<BridgePendingApproval[]> {
+  const result = await callOpenClawGateway<{ approvals: BridgePendingApproval[] }>(
+    'approvals_list', {}
+  )
+  return result?.approvals ?? []
+}
+
+/** Approve or deny a pending bridge tool-call approval. */
+export async function bridgeApprovalRespond(id: string, approved: boolean): Promise<void> {
+  await callOpenClawGateway('approval_response', { id, approved })
 }
